@@ -5,19 +5,31 @@ Date: 2026-03-10
 ## TL;DR
 
 ### The problem
-A BigQuery data agent could be created successfully when the **agent lived in Project A and read a BigQuery table in Project B**, but the reverse direction failed. At first glance this looked like a **cross-project BigQuery limitation**.
+A BigQuery data agent could be created successfully when the **agent and the source data were in the same project**.
+
+But when trying to create an agent in **Project A** using a BigQuery table from **Project B**, the cross-project data was **not visible / not selectable in the agent setup flow** — even though the same user could already query that BigQuery data cross-project directly.
+
+At first glance, this looked like a **cross-project BigQuery limitation** or a normal IAM problem on the dataset.
 
 It was **not**.
 
-The actual blocker was simpler: **the agent project must have `geminidataanalytics.googleapis.com` enabled**. If that API is disabled, agent creation can fail with **HTTP 403 `SERVICE_DISABLED`** before any real cross-project BigQuery permission check happens.
+The backend finding from the API tests was simpler: **the agent project must have `geminidataanalytics.googleapis.com` enabled**. If that API is disabled in the project that is trying to host the agent, the setup can break before any meaningful cross-project BigQuery access check happens.
+
+### Why this is confusing
+The confusing part is that **direct BigQuery access can already be working**, while the **agent creation/setup experience still behaves as if the cross-project data is unavailable**.
+
+So the real distinction is:
+- **BigQuery data access** may already be correct
+- but the **agent project itself** may still be missing the Gemini Data Analytics setup needed for cross-project agent creation/use
 
 ### The goal
-Make a data agent in one Google Cloud project query BigQuery data stored in another project, and understand exactly:
+Understand whether cross-project BigQuery data agents are actually supported, and if so:
 
 1. what must be enabled
 2. which IAM roles are needed
 3. which service agent appears
-4. what success and failure look like in practice
+4. what users should expect when the data is not visible in the selection flow
+5. how to tell the difference between a true data-access problem and an agent-project setup problem
 
 ### What readers need to do to make it work
 Assume:
@@ -56,7 +68,7 @@ Enable the required APIs in the **agent project**:
 gcloud services enable geminidataanalytics.googleapis.com cloudaicompanion.googleapis.com bigquery.googleapis.com --project="$PROJECT_A"
 ```
 
-If you also want the reverse direction to work, enable the same APIs in **Project B** too:
+If you also want **Project B** to be able to host agents, enable the same APIs there too:
 
 ```bash
 gcloud services enable geminidataanalytics.googleapis.com cloudaicompanion.googleapis.com bigquery.googleapis.com --project="$PROJECT_B"
@@ -147,36 +159,49 @@ If `geminidataanalytics.googleapis.com` is disabled, you should **not** expect t
 
 ### What success looks like
 When correctly configured:
-- the agent can be created in **Project A**
-- the knowledge source can point to a BigQuery table in **Project B**
+- same-project data is visible/selectable in the setup flow
+- cross-project BigQuery data can also be referenced by the agent
+- the agent can be created in **Project A** while pointing to a table in **Project B**
 - a question asked to the agent can generate SQL against the Project B table
 - the BigQuery job itself can run under **Project A**
 - temporary results can be written in **Project A**
 
-### What failure looks like
-If the API is disabled in the would-be agent project, expect something like:
-- HTTP `403`
-- reason: `SERVICE_DISABLED`
-- failure happens **before** a meaningful cross-project dataset permission check
+### What failure / misleading behavior looks like
+If the agent project is not fully enabled, users may see behavior that feels like a cross-project data problem, for example:
+- the remote dataset/table is not visible in the selection flow
+- the cross-project source is not available to choose
+- or API-based creation later fails with something like HTTP `403` and `SERVICE_DISABLED`
+
+The important point is that this can happen **even when direct BigQuery access to the remote data already works**.
 
 ### Docs reference
 Google Cloud docs that match the findings here:
 - Create data agents: https://docs.cloud.google.com/bigquery/docs/create-data-agents
 - Conversational Analytics API overview: https://docs.cloud.google.com/gemini/data-agents/conversational-analytics-api/overview
 - Enable the API: https://docs.cloud.google.com/gemini/data-agents/conversational-analytics-api/enable-the-api
+- Access control / agent vs data-source permissions: https://docs.cloud.google.com/gemini/docs/conversational-analytics-api/access-control
 
 ---
 
 ## Complete Test Results
 
-This section preserves the full observed behavior so readers know what to expect when reproducing the setup.
+This section preserves the backend behavior that was actually verified, while keeping the original user-facing symptom in mind.
+
+## Original user-facing symptom
+The practical symptom was:
+- same-project data could be used for data agent creation
+- cross-project data that the same user could already query directly was **not visible / not selectable** in the data-agent setup flow
+
+That symptom naturally suggests a cross-project BigQuery limitation.
+
+The backend/API tests below were used to determine whether that assumption was actually true.
 
 ## Goal of the test
 Verify whether a BigQuery data agent can be created in one project while referencing BigQuery tables in another project, using user ADC credentials.
 
 For privacy/public-sharing purposes, the real project IDs are abstracted here:
 - **Project A** = the first project tested as the working agent project
-- **Project B** = the second project tested as the failing agent project
+- **Project B** = the second project tested as the under-configured agent project
 
 The live behavior documented below is real; only the project identifiers are anonymized.
 
@@ -187,12 +212,14 @@ Authentication mode used:
 
 Conceptual topology:
 - **Project A** hosted the working data agent
-- **Project B** hosted one of the BigQuery source tables used in the successful cross-project test
+- **Project B** hosted one of the BigQuery source tables used in the successful cross-project API test
 
 ## Key finding
 **Cross-project data agents work** when the **agent project** has `geminidataanalytics.googleapis.com` enabled.
 
-The failed direction was **not** blocked by cross-project BigQuery itself. It failed because the project acting as the agent project did **not** have `geminidataanalytics.googleapis.com` enabled.
+So the original user symptom — remote data not being visible/selectable in the setup flow — was **not** evidence that cross-project BigQuery agents are unsupported.
+
+Instead, the later API tests showed that the decisive issue was **agent-project enablement**.
 
 ## 1) API enablement audit
 
@@ -209,7 +236,7 @@ The failed direction was **not** blocked by cross-project BigQuery itself. It fa
 - `geminidataanalytics.googleapis.com` — DISABLED
 
 ### Interpretation
-This was the decisive config difference between the successful and failing directions.
+This was the decisive config difference between the working agent project and the under-configured agent project.
 
 ## 2) Service agent provisioning
 Before the first successful data-agent creation in Project A, the Gemini Data Analytics service agent was not visible.
@@ -257,10 +284,8 @@ This is the operational model to expect:
 
 That means success is not just "agent creation works"; it also means **runtime query execution works across projects**.
 
-## 5) Reverse-direction creation test -- FAILED
-The reverse direction was then tested:
-- **Agent project:** Project B
-- **Source table:** a BigQuery table in Project A
+## 5) Under-configured agent-project test -- FAILED
+The other direction was then tested with a project that would act as the agent project but did **not** have `geminidataanalytics.googleapis.com` enabled.
 
 Observed result:
 - HTTP `403`
@@ -272,13 +297,10 @@ This is the critical point:
 The failure did **not** indicate a cross-project BigQuery restriction.
 It indicated that the project trying to host the agent was missing the required API.
 
-In other words:
-- **Project A agent -> Project B data** = worked
-- **Project B agent -> Project A data** = failed
-- root cause = Project B was not properly enabled as an **agent project**
+That explains why a user-facing setup flow could make the cross-project source look unavailable even if the underlying BigQuery access was already correct.
 
 ## Root cause summary
-The reverse-direction failure was caused by:
+The failing path was caused by:
 - missing `geminidataanalytics.googleapis.com` in the would-be agent project
 
 It was **not** caused by:
@@ -286,10 +308,22 @@ It was **not** caused by:
 - the source table being remote
 - an inherent limitation of the data-agent product in this scenario
 
-## What to check first if your setup fails
-If readers hit a similar failure, check these in order:
+## Governance / access model
+Google's access-control docs make an important distinction:
+- **Conversational Analytics / Gemini Data Analytics IAM roles** control access to the **agent**
+- underlying **BigQuery IAM** controls access to the **data source**
 
-1. Is the failing project acting as the **agent project**?
+Google docs state that when a user interacts with an agent, the connected data source is queried **using that user's credentials**.
+
+That means:
+- agent access does **not** replace BigQuery governance
+- giving a user access to an agent does **not** automatically grant them access to underlying BigQuery data they could not already query
+- if a user lacks BigQuery access, the agent should still be constrained by that user's data permissions
+
+## What to check first if your setup fails
+If readers hit a similar issue, check these in order:
+
+1. Is the project acting as the **agent project**?
 2. Is `geminidataanalytics.googleapis.com` enabled in that project?
 3. Are `cloudaicompanion.googleapis.com` and `bigquery.googleapis.com` also enabled there?
 4. Does the caller have `roles/geminidataanalytics.dataAgentCreator` and related roles in the agent project?
@@ -312,20 +346,21 @@ If you want the cleanest repro for teammates:
    - BigQuery job shows up in Project A
    - answer returns successfully
 
-Then, if you want to validate the failure mode:
+Then, if you want to validate the under-configured-agent-project behavior:
 
-8. Try the reverse direction with an intentionally under-configured project.
-9. Confirm that the failure is `403 SERVICE_DISABLED`.
+8. Try the same flow from a project that has BigQuery access but is missing `geminidataanalytics.googleapis.com`.
+9. Observe whether the source is missing in the setup flow and/or API calls fail with `403 SERVICE_DISABLED`.
 10. Enable `geminidataanalytics.googleapis.com` in that project and retry.
 
 ## Final conclusion
 The current evidence supports the following conclusion:
 
 1. **Cross-project BigQuery data agents are supported in practice** in this environment.
-2. The agent project must be configured as a real Gemini Data Analytics project, not just a generic BigQuery project.
-3. The most important setup requirement is enabling:
+2. A project can have valid direct BigQuery cross-project access and still be unable to host the agent properly.
+3. The agent project must be configured as a real Gemini Data Analytics project, not just a generic BigQuery project.
+4. The most important setup requirement is enabling:
    - `geminidataanalytics.googleapis.com`
-4. If that API is missing, the error can look like a product/data limitation when it is really a project setup issue.
+5. If that API is missing, the product can present symptoms that look like a cross-project data limitation when it is really a project setup issue.
 
 ## Small but important note
 One early assumption in the investigation turned out to be wrong:
