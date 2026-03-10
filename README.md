@@ -471,6 +471,34 @@ So:
 
 ---
 
+## UI behavior gap (observed 2026-03-10)
+
+A separate UI-specific observation was confirmed after the API repro above:
+
+### Fresh agent creation via UI
+- Go to BigQuery Agents > New agent > Add source
+- **Cross-project datasets are not visible / not selectable** in the knowledge source picker
+- Only same-project tables appear in the Recents and Search results
+- This happens even when the same identity can already query the cross-project table directly via BigQuery
+
+### Edit an API-created cross-project agent via UI
+- Create a cross-project agent via the API (as shown in Step 3 above)
+- Open that agent in the BigQuery console > Edit
+- **Cross-project datasets become visible and selectable** in the knowledge source picker
+
+### What this tells us
+This is a **UI-layer inconsistency**, not a backend capability limitation:
+
+- the backend accepts cross-project datasource references at agent creation time (confirmed via API)
+- the UI edit flow correctly surfaces cross-project tables when the agent already has them
+- the UI fresh creation flow does **not** surface cross-project tables, even under the same identity and IAM
+
+The most likely explanation is that the UI knowledge source picker during fresh creation applies an implicit same-project filter that is not present in the edit flow or the underlying API.
+
+This is worth reporting to the BQ Conversational Analytics team at: `bqca-feedback-external@google.com`
+
+---
+
 ## Minimal conclusion
 For the specific question this README cares about:
 
