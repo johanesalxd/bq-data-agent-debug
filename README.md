@@ -471,31 +471,30 @@ So:
 
 ---
 
-## UI behavior gap (observed 2026-03-10)
+## UI behavior — cross-project selection (observed and retested 2026-03-10)
 
-A separate UI-specific observation was confirmed after the API repro above:
+### Initial observation (stale browser session)
+During the initial debug session, cross-project datasets were not visible in the knowledge source picker during fresh agent creation via the UI. This led to a hypothesis of a UI-layer inconsistency or implicit same-project filter.
 
-### Fresh agent creation via UI
-- Go to BigQuery Agents > New agent > Add source
-- **Cross-project datasets are not visible / not selectable** in the knowledge source picker
-- Only same-project tables appear in the Recents and Search results
-- This happens even when the same identity can already query the cross-project table directly via BigQuery
+### Retest after browser restart
+After a full browser/tab restart, **fresh agent creation via the UI correctly surfaces cross-project datasets** in the knowledge source picker. The earlier observation was a stale browser session artifact, not a product bug.
 
-### Edit an API-created cross-project agent via UI
-- Create a cross-project agent via the API (as shown in Step 3 above)
-- Open that agent in the BigQuery console > Edit
-- **Cross-project datasets become visible and selectable** in the knowledge source picker
+### Conclusion: UI behavior is correct
+- Fresh agent creation via UI + cross-project selection: **works** (confirmed after browser restart)
+- Edit via UI on API-created cross-project agent: **works**
+- API creation with cross-project datasource reference: **works**
 
-### What this tells us
-This is a **UI-layer inconsistency**, not a backend capability limitation:
+There is **no UI bug**. The behavior is consistent across all three paths once the browser session is fresh.
 
-- the backend accepts cross-project datasource references at agent creation time (confirmed via API)
-- the UI edit flow correctly surfaces cross-project tables when the agent already has them
-- the UI fresh creation flow does **not** surface cross-project tables, even under the same identity and IAM
+### Root cause of the original user report
+Given that all paths work correctly with proper setup, the most likely explanation for the original user-reported issue is a **permissions gap**, not a product limitation. Specifically:
 
-The most likely explanation is that the UI knowledge source picker during fresh creation applies an implicit same-project filter that is not present in the edit flow or the underlying API.
+- missing `geminidataanalytics.googleapis.com` enablement on the agent project
+- missing required IAM roles (see Prerequisites section above)
+- missing `roles/bigquery.dataViewer` on the cross-project data source in Project B
+- stale browser session / cached UI state (as observed during this debug)
 
-This is worth reporting to the BQ Conversational Analytics team at: `bqca-feedback-external@google.com`
+If cross-project tables are not visible in the knowledge source picker, verify the prerequisites section above before assuming a product bug.
 
 ---
 
